@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="utf-8">
+    <title>本地联机测试（双人）</title>
+    <style>
+        html, body { margin: 0; height: 100%; background: #111; color: #ddd; font-family: Helvetica, Arial, sans-serif; }
+        .wrap { display: flex; height: calc(100% - 28px); gap: 4px; }
+        iframe { flex: 1; border: 0; background: #000; }
+        .bar { height: 28px; line-height: 28px; padding: 0 10px; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="bar">左边玩家 1，右边玩家 2。两边都选队伍并点 ONLINE：一边“创建房间”，另一边输入房间码“加入房间”。</div>
+    <div class="wrap">
+        <iframe src="page.html?p=1"></iframe>
+        <iframe src="page.html?p=2"></iframe>
+    </div>
+</body>
+</html>
