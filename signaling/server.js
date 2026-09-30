@@ -45,11 +45,12 @@ wss.on('connection', (ws) => {
       }
       set.add(ws);
       ws.room = room;
-      ws.send(JSON.stringify({ type: 'joined', peers: set.size }));
-      // 第二个人进房时，通知先来的那个发起 offer
+      ws.isHost = set.size === 1;   // 第一个进房的是 host
+      ws.send(JSON.stringify({ type: 'joined', peers: set.size, isHost: ws.isHost }));
+      // 第二个人进房时，通知 host（先来的那个）发起 offer
       if (set.size === 2) {
         for (const peer of set) {
-          if (peer !== ws && peer.readyState === 1) {
+          if (peer !== ws && peer.readyState === 1 && peer.isHost) {
             peer.send(JSON.stringify({ type: 'start' }));
           }
         }

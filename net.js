@@ -10,9 +10,24 @@
 // 也可以手动 net.useTransport = 'webrtc' | 'bc' 强制。
 // ============================================================
 (function () {
-    // 信令服务器地址。改成你部署的 wss:// 地址。
+    // 信令服务器地址。优先级：URL 参数 ?sig= > 同域名 > 默认本地。
     // 本地测试用 ws://127.0.0.1:8080；上线必须 wss://（HTTPS）。
-    const SIGNALING_URL = 'ws://127.0.0.1:8080';
+    // 部署后改成你的信令服务器域名，例如 wss://ttt-signaling.onrender.com。
+    function resolveSignalingUrl() {
+        try {
+            const p = new URLSearchParams(location.search).get('sig');
+            if (p) return p;
+        } catch (e) {}
+        // 同域名同端口：页面在 https://game.com，信令在 wss://game.com（同端口）
+        // 注意：只有部署时才用同端口，本地开发时静态服务器(8765)和信令服务器(8080)不同端口
+        if (location.protocol === 'https:') return 'wss://' + location.host;
+        // 本地开发：固定用 8080 端口的信令服务器
+        if (location.hostname === '127.0.0.1' || location.hostname === 'localhost') {
+            return 'ws://' + location.hostname + ':8080';
+        }
+        return 'ws://127.0.0.1:8080';
+    }
+    const SIGNALING_URL = resolveSignalingUrl();
 
     // STUN 服务器（NAT 穿透用）。Google 公开 STUN 免费。
     const ICE_SERVERS = [
@@ -122,6 +137,7 @@
             await this._wsConnect();
             this.ws.send(JSON.stringify({ type: 'join', room: this.roomCode }));
             this._status('房间码: ' + this.roomCode + '（等待对手加入...）');
+            this._startConnectTimeout();
             // host 等 'start' 信号（guest 进房后信令服务器发来）再发起 offer
         }
 
@@ -131,12 +147,31 @@
             await this._wsConnect();
             this.ws.send(JSON.stringify({ type: 'join', room: this.roomCode }));
             this._status('正在加入 ' + this.roomCode + ' ...');
+            this._startConnectTimeout();
             // guest 收到 host 的 offer 后回 answer
+        }
+
+        _startConnectTimeout() {
+            this._clearConnectTimeout();
+            this._connectTimer = setTimeout(() => {
+                if (!this.connected) {
+                    this._status('连接超时：对手未加入或 NAT 打不通');
+                }
+            }, 30000);
+        }
+
+        _clearConnectTimeout() {
+            if (this._connectTimer) { clearTimeout(this._connectTimer); this._connectTimer = null; }
         }
 
         _wsConnect() {
             return new Promise((resolve, reject) => {
-                this.ws = new WebSocket(SIGNALING_URL);
+                try {
+                    this.ws = new WebSocket(SIGNALING_URL);
+                } catch (e) {
+                    reject(new Error('信令地址无效'));
+                    return;
+                }
                 this.ws.onopen = () => resolve();
                 this.ws.onerror = () => reject(new Error('信令服务器连接失败'));
                 this.ws.onmessage = (e) => this._wsOnMessage(JSON.parse(e.data));
@@ -148,6 +183,13 @@
 
         _wsOnMessage(msg) {
             switch (msg.type) {
+                case 'joined':
+                    // 信令确认加入。以信令的角色为准，避免两边都当 host 或都不是
+                    if (msg.isHost != null) this.isHost = msg.isHost;
+                    if (!this.isHost && msg.peers === 1) {
+                        this._status('房间不存在或对手还未加入，等待中...');
+                    }
+                    break;
                 case 'start':           // 信令通知 host：guest 进房了，发起 offer
                     this._pcCreate().then(() => this._pcCreateOffer());
                     break;
@@ -165,6 +207,7 @@
                     break;
                 case 'error':
                     this._status('错误: ' + (msg.message || ''));
+                    this._clearConnectTimeout();
                     break;
             }
         }
@@ -179,8 +222,10 @@
             };
             this.pc.onconnectionstatechange = () => {
                 const s = this.pc.connectionState;
-                if (s === 'connected') this._handleConnected();
-                else if (s === 'disconnected' || s === 'failed' || s === 'closed') this._handleDisconnect();
+                // connected 由 DataChannel open 触发，这里不重复
+                // disconnected 通常几秒内自动恢复，不当离开
+                // 只有 failed / closed 才算真正断开
+                if (s === 'failed' || s === 'closed') this._handleDisconnect();
             };
             // host 创建可靠通道；guest 通过 ondatachannel 拿到
             if (this.isHost) {
@@ -231,6 +276,7 @@
         _handleConnected() {
             if (this.connected) return;
             this.connected = true;
+            this._clearConnectTimeout();
             this._status('已连接');
             this.onPeerJoin && this.onPeerJoin();
             this.onOpen && this.onOpen();
@@ -258,6 +304,7 @@
 
         leave() {
             clearInterval(this._helloTimer);
+            this._clearConnectTimeout();
             if (this.transport === 'bc') {
                 if (this._bc) {
                     this._bcPost({ t: 'leave', from: this.selfId });
