@@ -4235,80 +4235,16 @@
 
 
         function setFloatingButtonsVisible(visible) {
+            // 帮助和赞助按钮已隐藏，不再显示
             var supportBtn = document.getElementById("supportBtn");
             var helpBtn = document.getElementById("helpBtnDom");
-
-            if (supportBtn) supportBtn.style.display = visible ? "flex" : "none";
-            if (helpBtn) helpBtn.style.display = visible ? "flex" : "none";
+            if (supportBtn) supportBtn.style.display = "none";
+            if (helpBtn) helpBtn.style.display = "none";
         }
 
         function setupFloatingUi() {
-            var supportBtn = document.getElementById("supportBtn");
-            var supportModal = document.getElementById("supportModal");
-            var closeSupportBtn = document.getElementById("closeSupportBtn");
-            var buySupportBtn = document.getElementById("buySupportBtn");
-            var helpBtnDom = document.getElementById("helpBtnDom");
-
-            if (!supportBtn || !supportModal || !closeSupportBtn || !buySupportBtn || !helpBtnDom) return;
-
+            // 帮助和赞助按钮已隐藏，不绑定任何事件
             setFloatingButtonsVisible(false);
-
-            supportBtn.addEventListener("click", (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                isSupportModalOpen = true;
-                window.remix.paused = true;
-                supportModal.style.display = "flex";
-            });
-
-            closeSupportBtn.addEventListener("click", (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                supportModal.style.display = "none";
-                isSupportModalOpen = false;
-
-                if (gameState === "game") {
-                    window.remix.paused = false;
-                }
-            });
-
-            buySupportBtn.addEventListener("click", async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                supportModal.style.display = "none";
-
-                try {
-                    if (!window.FarcadeSDK) {
-                        return;
-                    }
-
-                    const result = await window.FarcadeSDK.purchase({ item: "support-dev" });
-
-                    if (result && result.success && window.FarcadeSDK.singlePlayer && window.FarcadeSDK.singlePlayer.actions) {
-                        window.FarcadeSDK.singlePlayer.actions.hapticFeedback();
-                    }
-                } catch (error) {
-                    console.error("Support transaction error:", error);
-                } finally {
-                    isSupportModalOpen = false;
-                    if (gameState === "game") {
-                        window.remix.paused = false;
-                    }
-                }
-            });
-
-            helpBtnDom.addEventListener("click", (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-
-                if (gameState !== "game") return;
-
-                playSound("hit" + Math.floor(6 * Math.random()));
-                initHelp();
-            });
         }
 
         function initPause() {
