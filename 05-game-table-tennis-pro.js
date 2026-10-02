@@ -2381,10 +2381,9 @@
             playSound(localWinner === "user" ? "userPoint" : "enemyPoint");
             if (localWinner === "user") totalScore++;
 
-            var target = 11;
-            var mine = oGameData.userScore, theirs = oGameData.enemyScore;
-            if ((mine >= target && theirs <= mine - 2) || (theirs >= target && mine <= theirs - 2)) {
-                initGameComplete();
+            // 主机判定比赛结束。联机不改动单机关卡进度。
+            if (msg.over) {
+                initOnlineGameComplete();
                 return;
             }
             ball.resetServe(msg.hostServes ? "enemy" : "user");
@@ -2522,13 +2521,16 @@
                 if ((oGameData.userScore + oGameData.enemyScore) % 2 === 0 || (oGameData.userScore >= 10 && oGameData.enemyScore >= 10)) {
                     this.serveFlip = !this.serveFlip;
                 }
+                var over = gameState !== "game"; // updateScore 可能已触发 initOnlineGameComplete
                 if (isOnline) {
                     net.send({
                         t: "point", winner: winner,
                         userScore: oGameData.userScore, enemyScore: oGameData.enemyScore,
-                        hostServes: this.serveFlip
+                        hostServes: this.serveFlip,
+                        over: over
                     }, true);
                 }
+                if (over) return;
                 if (gameState !== "game") return;
                 this.serveFlip ? this.resetServe("user") : this.resetServe("enemy");
             }
@@ -3428,6 +3430,9 @@
             if (userInput) userInput.checkKeyFocus();
             hasFocus = true;
 
+            // 联机时从后台回来：若仍处于暂停（因切后台触发），通知对方恢复
+            if (isOnline && gameState === "pause") netSendResume();
+
             if (!muted && gameState !== "pause" && gameState !== "help" && gameState !== "loading") {
                 // Sau khi trở lại từ background, Safari/iOS có thể suspend AudioContext và
                 // từ chối resume nếu lệnh không xuất phát từ gesture. Luôn cài lại listener
@@ -3448,6 +3453,8 @@
             hasFocus = false;
             NativeAudioController.mute(true);
             if (music && typeof music.pause === "function") music.pause();
+            // 联机时标签页切到后台：通知对方暂停
+            if (isOnline && gameState === "game") netSendPause();
         }
 
         function playMusic() {
@@ -4948,6 +4955,7 @@
                     userInput.removeHitArea("pause");
                     userInput.removeHitArea("gameTouch");
                     userInput.removeHitArea("mute");
+                    netSendPause();
                     initPause();
                     break;
 
@@ -4970,6 +4978,7 @@
                     userInput.removeHitArea("control0FromPause");
                     userInput.removeHitArea("control1FromPause");
                     userInput.removeHitArea("mute");
+                    netSendResume();
                     resumeGame();
                     break;
 
@@ -4987,7 +4996,13 @@
                     userInput.removeHitArea("playFromPause");
                     userInput.removeHitArea("restartFromPause");
                     userInput.removeHitArea("mute");
-                    initGame(true);
+                    if (isOnline) {
+                        // 联机重开 = 再来一局协调
+                        netSendResume();
+                        requestRematch();
+                    } else {
+                        initGame(true);
+                    }
                     break;
 
                 case "quitFromPause":
@@ -5007,6 +5022,12 @@
                     userInput.removeHitArea("playFromPause");
                     userInput.removeHitArea("restartFromPause");
                     userInput.removeHitArea("mute");
+                    if (isOnline) {
+                        isOnline = false;
+                        rematchRequested = false;
+                        remoteRematchReady = false;
+                        if (window.net) try { net.leave(); } catch (e) {}
+                    }
                     initStartScreen();
                     break;
 
@@ -5018,7 +5039,10 @@
                     userInput.removeHitArea("backFromGameComplete");
                     userInput.removeHitArea("nextFromGameComplete");
 
-                    if (oGameData.userScore > oGameData.enemyScore) {
+                    if (isOnline) {
+                        // 联机：请求再来一局，等双方都确认才重开
+                        requestRematch();
+                    } else if (oGameData.userScore > oGameData.enemyScore) {
                         initGameIntro();
                     } else {
                         initGame(true);
@@ -5029,11 +5053,18 @@
                     playSound("hit" + Math.floor(6 * Math.random()));
                     userInput.removeHitArea("backFromGameComplete");
                     userInput.removeHitArea("nextFromGameComplete");
+                    if (isOnline) {
+                        isOnline = false;
+                        rematchRequested = false;
+                        remoteRematchReady = false;
+                        if (window.net) try { net.leave(); } catch (e) {}
+                    }
                     initStartScreen();
                     break;
 
                 case "helpButton":
                     playSound("hit" + Math.floor(6 * Math.random()));
+                    netSendPause();
                     initHelp();
                     break;
 
@@ -5051,6 +5082,7 @@
 
                     panel = new Elements.Panel(gameState, []);
                     previousTime = new Date().getTime();
+                    netSendResume();
                     updateGameEvent();
                     break;
 
@@ -5092,7 +5124,7 @@
                     (oGameData.userScore >= a && (a < 2 || oGameData.enemyScore <= oGameData.userScore - 2)) ||
                     99 == oGameData.userScore
                 ) {
-                    initGameComplete();
+                    if (isOnline) initOnlineGameComplete(); else initGameComplete();
                 }
             } else {
                 oGameData.enemyScore++;
@@ -5103,7 +5135,7 @@
                     (oGameData.enemyScore >= a && (a < 2 || oGameData.userScore <= oGameData.enemyScore - 2)) ||
                     99 == oGameData.enemyScore
                 ) {
-                    initGameComplete();
+                    if (isOnline) initOnlineGameComplete(); else initGameComplete();
                 }
             }
         }
@@ -5185,12 +5217,49 @@
             }
         }
 
+        // 联机比赛结束：不改动单机关卡进度，等双方确认再来一局
+        function initOnlineGameComplete() {
+            if (window.remix.pointerLockHelper) userInput.unlockPointer();
+            gameState = "gameComplete";
+            if (1 == audioType) music.fade(music.volume(), 0.5 * masterVolume, 500);
+            userInput.removeHitArea("pause");
+            userInput.removeHitArea("gameTouch");
+
+            if (oGameData.userScore > oGameData.enemyScore) {
+                playSound("winGame");
+                if (audioType == 1 && !muted && applauseSound) applauseSound.play();
+            } else {
+                playSound("loseGame");
+            }
+
+            var buttons = [];
+            panel = new Elements.Panel(gameState, buttons);
+            aEffects = new Array();
+
+            setTimeout(function () {
+                userInput.addHitArea(
+                    "nextFromGameComplete",
+                    butEventHandler,
+                    null,
+                    "rect",
+                    { aRect: [0, 0, canvas.width, canvas.height] },
+                    true
+                );
+            }, 500);
+
+            previousTime = new Date().getTime();
+            updateGameComplete();
+        }
+
         // ==========================================
         // 5. KHỞI TẠO VÀ VÒNG LẶP GAME (ES6 CLEANED)
         // ==========================================
 
         // === 联机：注册网络消息回调 ===
         var netBatSendAccum = 0;
+        var rematchRequested = false;     // 本方已请求再来一局
+        var remoteRematchReady = false;   // 对方已请求再来一局
+
         function initOnlineNet() {
             if (!window.net) return;
             net.onMessage = function (msg) {
@@ -5215,16 +5284,123 @@
                         if (msg.userId != null) oGameData.enemyId = msg.userId;
                         break;
                     case "rematch":
-                        _initGame();
+                        // 对方请求再来一局。若本方也已请求，立即重开；否则记下对方已就绪。
+                        remoteRematchReady = true;
+                        if (rematchRequested) {
+                            startOnlineRematch();
+                        } else {
+                            showRematchOverlay("对手已准备再来一局，点屏幕确认");
+                        }
+                        break;
+                    case "pause":
+                        // 对方暂停，本方也暂停（不再回发，避免循环）
+                        if (gameState === "game") triggerRemotePause();
+                        break;
+                    case "resume":
+                        // 对方恢复，本方也恢复
+                        if (gameState === "pause") triggerRemoteResume();
                         break;
                 }
             };
             net.onPeerLeave = function () {
-                // 对手离开，回到主菜单
-                if (gameState === "game" || gameState === "gameComplete") {
-                    isOnline = false;
-                    if (window.confirm("对手已离开。返回主菜单？")) initStartScreen();
+                // 对手离开，用游戏内 UI 提示（不阻塞）
+                if (gameState === "game" || gameState === "gameComplete" || gameState === "pause") {
+                    showPeerLeaveOverlay();
                 }
+            };
+        }
+
+        // 联机再来一局：本方点击后请求，等对方也请求才一起重开
+        function requestRematch() {
+            if (rematchRequested) return;
+            rematchRequested = true;
+            if (net && net.connected) net.send({ t: "rematch" }, true);
+            if (remoteRematchReady) {
+                startOnlineRematch();
+            } else {
+                showRematchOverlay("等待对手确认再来一局...");
+            }
+        }
+
+        function startOnlineRematch() {
+            rematchRequested = false;
+            remoteRematchReady = false;
+            hideRematchOverlay();
+            _initGame();
+        }
+
+        // 暂停/恢复同步：发消息给对方
+        function netSendPause() {
+            if (isOnline && net && net.connected) net.send({ t: "pause" }, true);
+        }
+        function netSendResume() {
+            if (isOnline && net && net.connected) net.send({ t: "resume" }, true);
+        }
+
+        // 收到对方暂停：本地进入暂停（不再回发）
+        function triggerRemotePause() {
+            if (gameState !== "game") return;
+            if (audioType == 1) { NativeAudioController.mute(true); music.pause(); }
+            else if (audioType == 2) { music.pause(); }
+            userInput.removeHitArea("pause");
+            userInput.removeHitArea("gameTouch");
+            userInput.removeHitArea("mute");
+            initPause();
+        }
+        function triggerRemoteResume() {
+            if (gameState !== "pause") return;
+            userInput.removeHitArea("quitFromPause");
+            userInput.removeHitArea("playFromPause");
+            userInput.removeHitArea("restartFromPause");
+            userInput.removeHitArea("control0FromPause");
+            userInput.removeHitArea("control1FromPause");
+            userInput.removeHitArea("mute");
+            if (!muted) {
+                if (audioType == 1) { NativeAudioController.mute(false); unlockAudioContext(); applyAudioVolumes(); playMusic(); }
+                else if (audioType == 2) { playMusic(); }
+            }
+            resumeGame();
+        }
+
+        // 游戏内 overlay：等待对手 / 对手已就绪
+        function showRematchOverlay(text) {
+            hideRematchOverlay();
+            var d = document.createElement("div");
+            d.id = "online-rematch-overlay";
+            d.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;color:#fff;font-family:Helvetica,Arial,sans-serif;z-index:9999;pointer-events:none;";
+            d.innerHTML = '<div style="background:rgba(20,20,30,0.95);padding:24px 36px;border-radius:12px;font-size:18px;">' + text + '</div>';
+            document.body.appendChild(d);
+        }
+        function hideRematchOverlay() {
+            var d = document.getElementById("online-rematch-overlay");
+            if (d) d.remove();
+        }
+
+        // 游戏内 overlay：对手已离开
+        function showPeerLeaveOverlay() {
+            isOnline = false;
+            // 离开 "game"/"pause" 状态，游戏循环随之停止
+            gameState = "peerLeft";
+            userInput.removeHitArea("pause");
+            userInput.removeHitArea("gameTouch");
+            userInput.removeHitArea("nextFromGameComplete");
+            setFloatingButtonsVisible(false);
+            rematchRequested = false;
+            remoteRematchReady = false;
+            hideRematchOverlay();
+            var old = document.getElementById("online-peerleave");
+            if (old) old.remove();
+            var d = document.createElement("div");
+            d.id = "online-peerleave";
+            d.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:#fff;font-family:Helvetica,Arial,sans-serif;z-index:9999;";
+            d.innerHTML =
+                '<div style="font-size:20px;">对手已离开</div>' +
+                '<button id="ol-pl-back" style="padding:12px 28px;font-size:16px;background:#0d6efd;border:0;color:#fff;border-radius:8px;cursor:pointer;">返回主菜单</button>';
+            document.body.appendChild(d);
+            d.querySelector("#ol-pl-back").onclick = function () {
+                d.remove();
+                if (window.net) try { net.leave(); } catch (e) {}
+                initStartScreen();
             };
         }
 
