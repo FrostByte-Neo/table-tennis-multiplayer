@@ -38,8 +38,7 @@
     // 本地开发：localhost / 127.0.0.1
     /^localhost$/i,
     /^127\.0\.0\.1$/i,
-    // 上线时把你的信令服务器域名加进来，例如：
-    // /^ttt-signaling\.onrender\.com$/i,
+    // 上线的信令服务器不用加在这里：config.js 里的 signalingUrl 会自动放行
   ];
 
   function isAllowedDictionaryPath(pathname) {
@@ -119,6 +118,13 @@
     // 允许 WebSocket (ws:/wss:) 协议，联机对战需要
     if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:' &&
         resolved.protocol !== 'ws:' && resolved.protocol !== 'wss:') return false;
+    // 联机信令：同域名的 ws/wss，以及 config.js 里配置的信令服务器
+    if (resolved.protocol === 'ws:' || resolved.protocol === 'wss:') {
+      if (resolved.hostname === window.location.hostname) return true;
+      const sig = window.TT_CONFIG && window.TT_CONFIG.signalingUrl;
+      const sigUrl = sig ? resolveUrl(sig) : null;
+      if (sigUrl && sigUrl.host === resolved.host) return true;
+    }
     if (!allowedHostPatterns.some((pattern) => pattern.test(resolved.hostname))) return false;
 
     if (resolved.hostname === 'cdn.jsdelivr.net') {
@@ -904,8 +910,10 @@
             }
         }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/@remix-gg/sdk@0.17.0/dist/index.min.js"></script>
-    <script src="net.js"></script>
+    <script src="remix-sdk-0.17.0.min.js"></script>
+    <!-- 改了本地脚本后把 ?v= 加一，避免浏览器用缓存的旧版本 -->
+    <script src="config.js?v=4"></script>
+    <script src="net.js?v=4"></script>
 
     <script>
         // Bridge tối giản cho logic cũ của game.
@@ -959,7 +967,7 @@
         </div>
     </div>
 
-    <script src="05-game-table-tennis-pro.js"></script>
+    <script src="05-game-table-tennis-pro.js?v=4"></script>
 
 
 </body></html>

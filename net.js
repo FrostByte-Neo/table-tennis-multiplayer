@@ -6,18 +6,21 @@
 //   1. WebRTC          —— 真正的 P2P 直连，两台电脑可对打。需要信令服务器。
 //   2. BroadcastChannel —— 同浏览器多标签页联机，调试用。无需服务器。
 //
-// 自动选择：如果设置了 net.signalingUrl 就用 WebRTC，否则用 BroadcastChannel。
-// 也可以手动 net.useTransport = 'webrtc' | 'bc' 强制。
+// 默认用 WebRTC；URL 带 ?net=bc 时用 BroadcastChannel（无需信令服务器）。
+//
+// 部署配置：在加载 net.js 之前定义 window.TT_CONFIG（见 config.js）：
+//   signalingUrl  信令地址，必须 wss://（页面是 HTTPS 时）
+//   iceServers    STUN/TURN 列表，覆盖下面的默认值
 // ============================================================
 (function () {
-    // 信令服务器地址。优先级：URL 参数 ?sig= > 同域名 > 默认本地。
-    // 本地测试用 ws://127.0.0.1:8080；上线必须 wss://（HTTPS）。
-    // 部署后改成你的信令服务器域名，例如 wss://ttt-signaling.onrender.com。
+    const CONFIG = window.TT_CONFIG || {};
+    const params = new URLSearchParams(location.search);
+
+    // 信令服务器地址。优先级：URL 参数 ?sig= > TT_CONFIG.signalingUrl > 同域名 > 本地 8080。
     function resolveSignalingUrl() {
-        try {
-            const p = new URLSearchParams(location.search).get('sig');
-            if (p) return p;
-        } catch (e) {}
+        const p = params.get('sig');
+        if (p) return p;
+        if (CONFIG.signalingUrl) return CONFIG.signalingUrl;
         // 同域名同端口：页面在 https://game.com，信令在 wss://game.com（同端口）
         // 注意：只有部署时才用同端口，本地开发时静态服务器(8765)和信令服务器(8080)不同端口
         if (location.protocol === 'https:') return 'wss://' + location.host;
@@ -30,12 +33,20 @@
     const SIGNALING_URL = resolveSignalingUrl();
 
     // STUN 服务器（NAT 穿透用）。Google 公开 STUN 免费。
-    const ICE_SERVERS = [
+    // 对称 NAT / 公司网络需要 TURN 中继，通过 TT_CONFIG.iceServers 配置。
+    const ICE_SERVERS = CONFIG.iceServers || [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
-        // 打不通 NAT 时加 TURN（先不搭，等真有用户再补）：
-        // { urls: 'turn:turn.example.com:3478', username: '...', credential: '...' },
     ];
+
+    const PING_INTERVAL_MS = 1000;
+
+    const SIGNALING_ERRORS = {
+        room_not_found: '房间不存在，请检查房间码',
+        room_full: '房间已满',
+        room_exists: '房间码冲突，请重新创建',
+        invalid_room: '房间码无效',
+    };
 
     window.Net = class Net {
         constructor() {
@@ -57,10 +68,17 @@
             this.onPeerLeave = null;      // () => void
             this.onOpen = null;           // () => void  连接建立
             this.onStatus = null;        // (text) => void  状态变化（可选，给 UI 显示）
+            this.onError = null;         // (code) => void  信令拒绝（房间不存在/已满等）
 
-            // 自动选传输层
-            this.useTransport = SIGNALING_URL ? 'webrtc' : 'bc';
+            // 往返延迟（毫秒，指数平滑）。连上后每秒 ping 一次。
+            this.rtt = 0;
+            this._pingTimer = null;
+
+            this.useTransport = params.get('net') === 'bc' ? 'bc' : 'webrtc';
         }
+
+        // 单程延迟估计（秒），供游戏做延迟补偿
+        get oneWay() { return this.rtt / 2000; }
 
         _status(t) { if (this.onStatus) this.onStatus(t); }
 
@@ -115,15 +133,14 @@
             if (!msg) return;
             if (msg.t === 'hello') {
                 if (this.isHost) this._bcPost({ t: 'ack', from: this.selfId });
-                if (!this.connected) { this.connected = true; this.onPeerJoin && this.onPeerJoin(); this.onOpen && this.onOpen(); }
+                this._handleConnected();
                 return;
             }
             if (msg.t === 'ack') {
-                if (!this.connected) { this.connected = true; this.onPeerJoin && this.onPeerJoin(); this.onOpen && this.onOpen(); }
+                this._handleConnected();
                 return;
             }
-            if (msg.t === 'leave') { this.connected = false; this.onPeerLeave && this.onPeerLeave(); return; }
-            this.onMessage && this.onMessage(msg);
+            this._onPeerMsg(msg);
         }
 
         _bcPost(msg) {
@@ -135,7 +152,7 @@
             this.transport = 'webrtc';
             this._status('连接信令服务器...');
             await this._wsConnect();
-            this.ws.send(JSON.stringify({ type: 'join', room: this.roomCode }));
+            this.ws.send(JSON.stringify({ type: 'join', room: this.roomCode, create: true }));
             this._status('房间码: ' + this.roomCode + '（等待对手加入...）');
             this._startConnectTimeout();
             // host 等 'start' 信号（guest 进房后信令服务器发来）再发起 offer
@@ -186,9 +203,6 @@
                 case 'joined':
                     // 信令确认加入。以信令的角色为准，避免两边都当 host 或都不是
                     if (msg.isHost != null) this.isHost = msg.isHost;
-                    if (!this.isHost && msg.peers === 1) {
-                        this._status('房间不存在或对手还未加入，等待中...');
-                    }
                     break;
                 case 'start':           // 信令通知 host：guest 进房了，发起 offer
                     this._pcCreate().then(() => this._pcCreateOffer());
@@ -206,8 +220,9 @@
                     this._handleDisconnect();
                     break;
                 case 'error':
-                    this._status('错误: ' + (msg.message || ''));
+                    this._status(SIGNALING_ERRORS[msg.code] || ('错误: ' + (msg.message || '')));
                     this._clearConnectTimeout();
+                    this.onError && this.onError(msg.code);
                     break;
             }
         }
@@ -267,16 +282,33 @@
             dc.onmessage = (e) => {
                 let data;
                 try { data = JSON.parse(e.data); } catch { return; }
-                if (data.t === 'leave') { this._handleDisconnect(); return; }
-                this.onMessage && this.onMessage(data);
+                this._onPeerMsg(data);
             };
             dc.onclose = () => this._handleDisconnect();
+        }
+
+        // 两种传输层共用的收包入口：ping/pong/leave 在网络层消化，其余交给游戏
+        _onPeerMsg(data) {
+            if (!data) return;
+            if (data.t === 'leave') { this._handleDisconnect(); return; }
+            if (data.t === 'ping') { this.send({ t: 'pong', ts: data.ts }, true); return; }
+            if (data.t === 'pong') {
+                const sample = performance.now() - data.ts;
+                this.rtt = this.rtt ? this.rtt * 0.8 + sample * 0.2 : sample;
+                return;
+            }
+            this.onMessage && this.onMessage(data);
         }
 
         _handleConnected() {
             if (this.connected) return;
             this.connected = true;
             this._clearConnectTimeout();
+            this.rtt = 0;
+            clearInterval(this._pingTimer);
+            const ping = () => this.send({ t: 'ping', ts: performance.now() }, true);
+            ping();
+            this._pingTimer = setInterval(ping, PING_INTERVAL_MS);
             this._status('已连接');
             this.onPeerJoin && this.onPeerJoin();
             this.onOpen && this.onOpen();
@@ -285,6 +317,7 @@
         _handleDisconnect() {
             if (!this.connected) return;
             this.connected = false;
+            clearInterval(this._pingTimer);
             this._status('对手已离开');
             this.onPeerLeave && this.onPeerLeave();
         }
@@ -304,6 +337,7 @@
 
         leave() {
             clearInterval(this._helloTimer);
+            clearInterval(this._pingTimer);
             this._clearConnectTimeout();
             if (this.transport === 'bc') {
                 if (this._bc) {
@@ -316,7 +350,12 @@
                     try { this.dcReliable && this.dcReliable.send(JSON.stringify({ t: 'leave' })); } catch {}
                 }
                 if (this.pc) { this.pc.close(); this.pc = null; }
-                if (this.ws) { try { this.ws.send(JSON.stringify({ type: 'leave' })); } catch {} this.ws.close(); this.ws = null; }
+                if (this.ws) {
+                    this.ws.onclose = null;
+                    try { this.ws.send(JSON.stringify({ type: 'leave' })); } catch {}
+                    this.ws.close();
+                    this.ws = null;
+                }
             }
             this.connected = false;
         }

@@ -11,10 +11,16 @@
     </style>
 </head>
 <body>
-    <div class="bar">左边玩家 1，右边玩家 2。两边都选队伍并点 ONLINE：一边“创建房间”，另一边输入房间码“加入房间”。</div>
+    <div class="bar">左边玩家 1，右边玩家 2。两边都选队伍并点 ONLINE：一边“创建房间”，另一边输入房间码“加入房间”。默认走 WebRTC（需要信令服务器）；加 ?net=bc 改用 BroadcastChannel。</div>
     <div class="wrap">
-        <iframe src="page.html?p=1"></iframe>
-        <iframe src="page.html?p=2"></iframe>
+        <iframe id="p1"></iframe>
+        <iframe id="p2"></iframe>
     </div>
+    <script>
+        // 把本页的 URL 参数（?net=bc、?sig=...）转给两个玩家
+        var q = location.search ? location.search.slice(1) + "&" : "";
+        document.getElementById("p1").src = "page.html?" + q + "p=1";
+        document.getElementById("p2").src = "page.html?" + q + "p=2";
+    </script>
 </body>
 </html>

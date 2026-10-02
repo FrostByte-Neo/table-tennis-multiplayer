@@ -23,24 +23,48 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
 const rooms = new Map(); // roomCode -> Set<ws>
 
+// 托管平台的反向代理会断开空闲连接；定时 ping，顺便清掉已经死掉的连接
+const HEARTBEAT_MS = 25000;
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, HEARTBEAT_MS);
+wss.on('close', () => clearInterval(heartbeat));
+
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     const { type, room, payload } = msg;
 
     if (type === 'join') {
-      if (!room || room.length === 0 || room.length > 16) {
-        ws.send(JSON.stringify({ type: 'error', message: 'invalid room' }));
+      if (typeof room !== 'string' || room.length === 0 || room.length > 16) {
+        ws.send(JSON.stringify({ type: 'error', code: 'invalid_room', message: 'invalid room' }));
         return;
       }
-      if (!rooms.has(room)) rooms.set(room, new Set());
+      if (ws.room) return;
+      // create=true 是房主建房；加入方不能凭空建房，否则输错房间码会一直空等
+      if (msg.create) {
+        if (rooms.has(room)) {
+          ws.send(JSON.stringify({ type: 'error', code: 'room_exists', message: 'room exists' }));
+          return;
+        }
+        rooms.set(room, new Set());
+      } else if (!rooms.has(room)) {
+        ws.send(JSON.stringify({ type: 'error', code: 'room_not_found', message: 'room not found' }));
+        return;
+      }
       const set = rooms.get(room);
       if (set.size >= 2) {
-        ws.send(JSON.stringify({ type: 'error', message: 'room full' }));
+        ws.send(JSON.stringify({ type: 'error', code: 'room_full', message: 'room full' }));
         return;
       }
       set.add(ws);
@@ -83,6 +107,7 @@ function _remove(ws) {
   const set = rooms.get(ws.room);
   if (!set) return;
   set.delete(ws);
+  ws.room = null;
   // 通知剩下的人对方离开了
   for (const peer of set) {
     if (peer.readyState === 1) peer.send(JSON.stringify({ type: 'peer_left' }));

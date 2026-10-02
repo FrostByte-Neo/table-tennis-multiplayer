@@ -2343,6 +2343,7 @@
             if (msg.pt !== oGameData.userScore + oGameData.enemyScore) return;
             const b = msg.ball;
             if (ball.servePrepTween) ball.servePrepTween.kill();
+            ball.cancelPendingPoint();
             ball.awaitingPoint = false;
             ball.tablePosX = -b.px;
             ball.tablePosY = 1 - b.py;
@@ -2369,6 +2370,21 @@
             playSound(msg.isSmash ? "hit5" : "hit" + Math.floor(6 * Math.random()));
             if (msg.isSmash) enemyBat.playSmashAnimation(ball.x);
             enemy_hitType = msg.isSmash ? "powerBall" : ((ball.spin !== 0) ? "curvedBall" : (ball.speed >= 0.5 ? "powerBall" : ""));
+
+            // 消息晚到了一个单程延迟，把球快进到对方此刻看到的位置
+            fastForwardBall(Math.min(net.oneWay, MAX_HIT_LAG_SEC));
+        }
+
+        // 用正常的物理步进推进球，保证和对方本地模拟一致
+        var MAX_HIT_LAG_SEC = 0.2;
+        function fastForwardBall(sec) {
+            var savedDelta = delta;
+            while (sec > 1e-4 && ball && gameState === "game" && ball.lastHit === "enemy" && !ball.awaitingPoint) {
+                delta = Math.min(1 / 120, sec);
+                sec -= delta;
+                ball.update();
+            }
+            delta = savedDelta;
         }
 
         // === 联机：加入方应用主机的判分 ===
@@ -2421,6 +2437,7 @@
 
             resetServe(hitter) {
                 this.awaitingPoint = false;
+                this.cancelPendingPoint();
                 this.servingState = 0;
                 this.canHit = false;
                 enemyBat.resetToCentre();
@@ -2517,6 +2534,29 @@
                     this.awaitingPoint = true;
                     return;
                 }
+                // 球飞向对手时，对手的回球要晚一个单程延迟才到，主机多等一个 RTT 再判分
+                if (isOnline && this.lastHit === "user" && !this.pendingPoint) {
+                    this.pendingPoint = winner;
+                    this.pendingTimer = setTimeout(() => this.commitPendingPoint(), Math.min(net.rtt + 50, 400));
+                    return;
+                }
+                this.scorePoint(winner);
+            }
+
+            commitPendingPoint() {
+                if (!this.pendingPoint || ball !== this) return;
+                const winner = this.pendingPoint;
+                this.pendingPoint = null;
+                this.scorePoint(winner);
+            }
+
+            cancelPendingPoint() {
+                if (this.pendingTimer) clearTimeout(this.pendingTimer);
+                this.pendingTimer = null;
+                this.pendingPoint = null;
+            }
+
+            scorePoint(winner) {
                 updateScore(winner);
                 if ((oGameData.userScore + oGameData.enemyScore) % 2 === 0 || (oGameData.userScore >= 10 && oGameData.enemyScore >= 10)) {
                     this.serveFlip = !this.serveFlip;
@@ -2537,7 +2577,7 @@
 
             update() {
                 if (window.remix && window.remix.paused) return;
-                if (this.awaitingPoint) return;
+                if (this.awaitingPoint || this.pendingPoint) return;
 
                 // Trạng thái chuẩn bị giao bóng
                 if (this.servingState === 0) {
@@ -2604,7 +2644,7 @@
                     this.height -= this.heightInc * this.speed * delta;
 
                     // Đập lưới
-                    if (this.ballShortState === 1 && this.tablePosY <= 0.5) {
+                    if (this.ballShortState === 1 && (this.lastHit === "user" ? this.tablePosY <= 0.5 : this.tablePosY >= 0.5)) {
                         playSound("hitNet");
                         this.tableVY *= -0.5;
                         this.tableVX *= 0.5;
@@ -2628,6 +2668,10 @@
                         tableTop.bounce();
 
                         if (this.lastHit === "user" && this.tablePosY > 0.5 && this.servingState > 1) {
+                            this.spin = 0;
+                            this.ballShortState = 1;
+                        } else if (isOnline && this.lastHit === "enemy" && this.tablePosY < 0.5 && this.servingState > 1) {
+                            // 对方回球落在对方半场：对方本地会判下网，这里镜像同一规则
                             this.spin = 0;
                             this.ballShortState = 1;
                         }
@@ -3727,13 +3771,21 @@
             };
 
             var busy = false;
-            function lockLobby() {
-                busy = true;
+            function setLobbyLocked(locked) {
+                busy = locked;
                 ["#ol-create", "#ol-joinbtn", "#ol-joingo"].forEach(function (sel) {
                     var b = lobby.querySelector(sel);
-                    b.disabled = true;
-                    b.style.opacity = "0.5";
+                    b.disabled = locked;
+                    b.style.opacity = locked ? "0.5" : "1";
                 });
+            }
+            function lockLobby() {
+                setLobbyLocked(true);
+                net.onError = function () {
+                    net.leave();
+                    isOnline = false;
+                    setLobbyLocked(false);
+                };
             }
             function onConnected() {
                 net.send({ t: "profile", userId: oGameData.userId }, true);
@@ -3752,9 +3804,20 @@
                 isOnline = true;
                 net.onPeerJoin = onConnected;
                 net.onStatus = (t) => setStatus(t, "#6f6");
-                const code = await net.createRoom();
-                setStatus("房间码: " + code + "（等待对手加入...）", "#6f6");
+                try {
+                    const code = await net.createRoom();
+                    setStatus("房间码: " + code + "（等待对手加入...）", "#6f6");
+                } catch (err) {
+                    failLobby(err);
+                }
             };
+
+            function failLobby(err) {
+                net.leave();
+                isOnline = false;
+                setLobbyLocked(false);
+                setStatus((err && err.message) || "连接失败", "#f88");
+            }
 
             lobby.querySelector("#ol-joinbtn").onclick = function () {
                 if (busy) return;
@@ -3772,7 +3835,11 @@
                 net.onPeerJoin = onConnected;
                 net.onStatus = (t) => setStatus(t, "#aaa");
                 setStatus("正在加入 " + code + " ...", "#aaa");
-                await net.joinRoom(code);
+                try {
+                    await net.joinRoom(code);
+                } catch (err) {
+                    failLobby(err);
+                }
             };
         }
 
