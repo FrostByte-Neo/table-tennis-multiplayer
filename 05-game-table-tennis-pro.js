@@ -2371,6 +2371,7 @@
             ball.spinInc = -b.spinInc;
             ball.servingState = msg.serving;
             ball.bounceNum = 0;
+            ball.resetLanding();
             ball.offTable = false;
             ball.offSide = false;
             ball.ballShortState = 0;
@@ -2388,15 +2389,34 @@
             fastForwardBall(Math.min(net.oneWay, MAX_HIT_LAG_SEC));
         }
 
-        // 用正常的物理步进推进球，保证和对方本地模拟一致
+        // 联机时球的物理按固定步长推进：两边帧率不同也能从同一个击球状态算出同一条轨迹
+        var BALL_STEP = 1 / 120;
+        var ballStepAcc = 0;
+        function stepBallFixed() {
+            var frameDelta = delta;
+            ballStepAcc = Math.min(ballStepAcc + delta, 0.1);
+            delta = BALL_STEP;
+            while (ballStepAcc >= BALL_STEP && gameState === "game") {
+                ballStepAcc -= BALL_STEP;
+                // 拖尾每帧只记一个点，长度和单机一致
+                ball.skipTrail = ballStepAcc >= BALL_STEP;
+                ball.update();
+            }
+            ball.skipTrail = false;
+            delta = frameDelta;
+        }
+
         var MAX_HIT_LAG_SEC = 0.2;
         function fastForwardBall(sec) {
             var savedDelta = delta;
-            while (sec > 1e-4 && ball && gameState === "game" && ball.lastHit === "enemy" && !ball.awaitingPoint) {
-                delta = Math.min(1 / 120, sec);
-                sec -= delta;
+            var steps = Math.round(sec / BALL_STEP);
+            delta = BALL_STEP;
+            while (steps > 0 && ball && gameState === "game" && ball.lastHit === "enemy" && !ball.awaitingPoint) {
+                steps--;
+                ball.skipTrail = steps > 0;
                 ball.update();
             }
+            if (ball) ball.skipTrail = false;
             delta = savedDelta;
         }
 
@@ -2451,6 +2471,7 @@
             resetServe(hitter) {
                 this.awaitingPoint = false;
                 this.cancelPendingPoint();
+                this.resetLanding();
                 this.servingState = 0;
                 this.canHit = false;
                 enemyBat.resetToCentre();
@@ -2502,6 +2523,7 @@
             }
 
             setBouncePoint(hitData) {
+                this.resetLanding();
                 this.spin = hitData.spin;
                 this.spinInc = 0;
 
@@ -2567,6 +2589,31 @@
                 if (this.pendingTimer) clearTimeout(this.pendingTimer);
                 this.pendingTimer = null;
                 this.pendingPoint = null;
+            }
+
+            // 每次击球后重新记录落台情况
+            resetLanding() {
+                this.landed = false;   // 已合法落到接球方台面
+                this.faulted = false;  // 击球方已失误（没过网、发球没先落自己半场等）
+            }
+
+            // 只看球台坐标判断，和屏幕尺寸、视角无关，联机两边结果一致
+            recordBounce() {
+                if (this.landed || this.faulted) return;
+                const onHitterSide = this.lastHit === "user" ? this.tablePosY > 0.5 : this.tablePosY < 0.5;
+                const isServe = this.servingState === 1;
+                if (onHitterSide) {
+                    if (!(isServe && this.bounceNum === 1)) this.faulted = true;
+                } else if (isServe ? this.bounceNum === 2 : this.bounceNum === 1) {
+                    this.landed = true;
+                } else {
+                    this.faulted = true;
+                }
+            }
+
+            pointWinner() {
+                if (this.landed) return this.lastHit;
+                return this.lastHit === "user" ? "enemy" : "user";
             }
 
             scorePoint(winner) {
@@ -2638,7 +2685,8 @@
                     }
 
                     // Bóng bay ra ngoài lưới / qua người
-                    if (!this.offTable && this.lastHit === "user" && this.tablePosY < 0) {
+                    // 对方的球撞网弹回后也会从远端飞出台面
+                    if (!this.offTable && this.tablePosY < 0) {
                         this.offTable = true;
                         if (this.aTrailPoints.length > 0) {
                             this.offTableVX = 10 * (this.x - this.aTrailPoints[0].x);
@@ -2649,7 +2697,7 @@
                         }
                         if (this.offTableTween) this.offTableTween.kill();
                         this.offTableTween = TweenLite.to(this, 2, { offTableVX: 0, offTableVY: 0, ease: "Quad.easeOut" });
-                        enemyBat.flail();
+                        if (this.lastHit === "user") enemyBat.flail();
                     }
 
                     // Trọng lực và nảy
@@ -2678,6 +2726,7 @@
                         this.bounceNum++;
                         this.bounceX = this.tablePosX;
                         this.bounceY = this.tablePosY;
+                        this.recordBounce();
                         tableTop.bounce();
 
                         if (this.lastHit === "user" && this.tablePosY > 0.5 && this.servingState > 1) {
@@ -2694,11 +2743,7 @@
 
                     // Tính điểm nếu rớt ra ngoài
                     if ((this.offTable || this.offSide) && this.height <= -200) {
-                        if (this.lastHit === "user") {
-                            this.endPoint(this.bounceNum === 0 ? "enemy" : "user");
-                        } else {
-                            this.endPoint(this.bounceNum === 0 ? "user" : "enemy");
-                        }
+                        this.endPoint(this.pointWinner());
                         return;
                     }
 
@@ -2714,12 +2759,14 @@
                     this.scale = 0.27 + (this.y - canvas.height / 4) / 600;
 
                     // Vẽ Trail (Vệt bóng)
-                    this.aTrailPoints.push({ x: this.x, y: this.y, height: this.height, scale: this.scale });
-                    if (this.aTrailPoints.length > 5) this.aTrailPoints.shift();
+                    if (!this.skipTrail) {
+                        this.aTrailPoints.push({ x: this.x, y: this.y, height: this.height, scale: this.scale });
+                        if (this.aTrailPoints.length > 5) this.aTrailPoints.shift();
+                    }
 
                     // Rơi xuống đất
                     if (this.y > canvas.height) {
-                        this.endPoint((this.bounceNum > 0 || this.ballShortState > 0) ? "enemy" : "user");
+                        this.endPoint(this.pointWinner());
                         return;
                     }
 
@@ -5521,7 +5568,7 @@
 
                 // Chỉ tính toán vật lý khi không Pause
                 if (!window.remix.paused) {
-                    ball.update();
+                    if (isOnline) stepBallFixed(); else ball.update();
                     enemyBat.update();
                     userBat.update();
                     netSendBatPos();
