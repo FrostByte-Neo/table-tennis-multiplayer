@@ -7,7 +7,8 @@
 | 文件 | 作用 |
 |---|---|
 | `page.html` | 入口页面。内嵌运行时安全 guard 和 TweenLite 兼容层，按顺序加载下面的脚本 |
-| `config.js` | 部署配置：信令服务器地址、STUN/TURN 列表 |
+| `config.js` | 部署配置：信令服务器地址、STUN/TURN 列表；品牌名、球拍颜色、球拍 logo |
+| `assets/xinian-logo.svg` | 印在球拍中心的 XINIAN logo |
 | `net.js` | 网络层。WebRTC（一条可靠通道 + 一条不可靠通道），以及调试用的 BroadcastChannel |
 | `05-game-table-tennis-pro.js` | 游戏本体和联机逻辑 |
 | `remix-sdk-0.17.0.min.js` | Remix SDK 本地副本（与 jsDelivr 上的 0.17.0 完全一致） |
@@ -46,4 +47,4 @@ python3 -m http.server 8765
 
 ## 版权说明
 
-游戏本体（`05-game-table-tennis-pro.js`、`page.html` 里内嵌的代码和美术资源链接）来自 Remix 平台上的游戏，**没有明确的开源或商用许可**。联机部分（`net.js`、`signaling/`、`config.js`、`dual.html` 以及游戏脚本中标注"联机"的改动）是新写的代码。公开发布或商用之前，需要先取得原作者的授权。
+游戏本体（`05-game-table-tennis-pro.js`、`page.html` 里内嵌的代码和美术资源链接）来自 Remix 平台上的游戏，**没有明确的开源或商用许可**。联机部分（`net.js`、`signaling/`、`config.js`、`dual.html` 以及游戏脚本中标注"联机"的改动）和 `assets/xinian-logo.svg` 是新做的。公开发布或商用之前，需要先取得原作者的授权。

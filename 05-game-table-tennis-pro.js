@@ -84,6 +84,12 @@
                 override: {},
             },
             isSupportModalOpen = false;
+        // 品牌标识，在 config.js 里改
+        var BRAND = Object.assign({
+            name: "XINIAN",
+            paddleColor: "#E3242B",
+            paddleLogo: "assets/xinian-logo.svg",
+        }, (window.TT_CONFIG && window.TT_CONFIG.brand) || {});
         // === 联机对战 ===
         var isOnline = false,          // 是否联机模式
             netSeq = 0,                 // 本地击球序号
@@ -1038,8 +1044,15 @@
                 targetCtx.textAlign = "center";
                 targetCtx.textBaseline = "middle";
                 targetCtx.fillStyle = "rgba(255,255,255,0.92)";
-                targetCtx.font = `900 ${Math.max(15, Math.min(28, signH * 0.21))}px Arial`;
-                targetCtx.fillText("PRO X", width / 2, emblemY);
+                let emblemFont = Math.max(15, Math.min(28, signH * 0.21));
+                targetCtx.font = `900 ${emblemFont}px Arial`;
+                const emblemMaxW = emblemR * 2.8;
+                const emblemTextW = targetCtx.measureText(BRAND.name).width;
+                if (emblemTextW > emblemMaxW) {
+                    emblemFont *= emblemMaxW / emblemTextW;
+                    targetCtx.font = `900 ${emblemFont}px Arial`;
+                }
+                targetCtx.fillText(BRAND.name, width / 2, emblemY);
                 targetCtx.fillStyle = "rgba(218,232,248,0.66)";
                 targetCtx.font = `700 ${Math.max(8, Math.min(13, signH * 0.09))}px Arial`;
                 targetCtx.letterSpacing = "2px";
@@ -1054,8 +1067,8 @@
                 const bannerRightX = width - bannerLeftX - bannerW;
 
                 [
-                    { x: bannerLeftX, color: accentA, label: "TT" },
-                    { x: bannerRightX, color: accentB, label: "PX" }
+                    { x: bannerLeftX, color: accentA, label: BRAND.name + " OPEN" },
+                    { x: bannerRightX, color: accentB, label: BRAND.name + " CUP" }
                 ].forEach((banner) => {
                     targetCtx.fillStyle = "rgba(3,9,18,0.72)";
                     this.stadiumRoundRectPath(targetCtx, banner.x, bannerY, bannerW, bannerH, 6);
@@ -1073,7 +1086,7 @@
                         targetCtx.textBaseline = "middle";
                         targetCtx.fillStyle = "rgba(255,255,255,0.48)";
                         targetCtx.font = `800 ${Math.max(10, bannerW * 0.28)}px Arial`;
-                        targetCtx.fillText(banner.label + " CHAMPIONSHIP", 0, 0);
+                        targetCtx.fillText(banner.label, 0, 0);
                         targetCtx.restore();
                     }
                 });
@@ -1947,7 +1960,7 @@
                 this.bufferCtx.clearRect(0, 0, atlasData.width, atlasData.height);
                 this.bufferCtx.drawImage(this.gameElementsData.img, atlasData.x, atlasData.y, atlasData.width, atlasData.height, 0, 0, atlasData.width, atlasData.height);
                 this.bufferCtx.globalCompositeOperation = "source-in";
-                this.bufferCtx.fillStyle = "#B6FF00";
+                this.bufferCtx.fillStyle = BRAND.paddleColor;
                 this.bufferCtx.fillRect(0, 0, atlasData.width, atlasData.height);
                 this.bufferCtx.globalCompositeOperation = "source-over";
 
@@ -5741,7 +5754,7 @@
                 [
                     {
                         id: "paddleLogo",
-                        file: ASSET_BASE + "remix_logo-1yebCct4IL-ySAmUer7Vle7uFqxTNcsuqxbbgCaqU.webp?mp5h",
+                        file: BRAND.paddleLogo,
                     },
                     // --- NHÓM 1: UI & BUTTONS ---
                     {
